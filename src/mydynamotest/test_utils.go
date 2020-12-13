@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"github.com/go-ini/ini"
 )
 
 //Creats a command that will start Dynamo nodes based on the config file specified
@@ -58,4 +59,58 @@ func valuesEqual(v1 []byte, v2 []byte) bool {
 		}
 	}
 	return true
+}
+
+func setClusterSize(configFilePath string) {
+	configContent, err := ini.Load(configFilePath)
+	if err != nil {
+		log.Println(err)
+		log.Println("Failed to load config file:", configFilePath)
+		log.Println(mydynamo.USAGE_STRING)
+		os.Exit(mydynamo.EX_CONFIG)
+	}
+
+	// Load the detailed configuration from section "mydynamo"
+	dynamoConfigs := configContent.Section(mydynamo.MYDYNAMO)
+
+	cluster_size, err := dynamoConfigs.Key(mydynamo.CLUSTER_SIZE).Int()
+	if err != nil {
+		log.Println(err)
+		log.Println("Failed to load config file, field is wrong type:", configFilePath)
+		log.Println(mydynamo.USAGE_STRING)
+		os.Exit(mydynamo.EX_CONFIG)
+	}
+
+	// set the cluster size
+	mydynamo.SetClusterSize(cluster_size)
+}
+
+func makeClocksList(numClocks int) []mydynamo.VectorClock {
+	var clocks []mydynamo.VectorClock
+
+	for i := 0; i < numClocks; i++ {
+		clocks	= append(clocks, mydynamo.NewVectorClock())
+	}
+	return clocks
+}
+func incElementVersion(s *mydynamo.VectorClock, id string, version int) {
+	for i := 0; i < version; i++ {
+		s.Increment(id)
+	}
+}
+func resetElement(s *mydynamo.VectorClock, id string) {
+	//element	:= mydynamo.NewElement(id)
+	//s.Elements[s.GetNodeAtoi(id)]	= element
+	delete(s.Elements, id)
+}
+func setElementVersion(s *mydynamo.VectorClock, id string, version int) {
+	resetElement(s, id)
+	incElementVersion(s, id, version)
+}
+
+func checkVersionFromResult(result mydynamo.DynamoResult, id string, version int) bool {
+	if result.EntryList == nil || len(result.EntryList) == 0 {
+		return false
+	}
+	return result.EntryList[0].Context.Clock.VersionIs(id, version)
 }

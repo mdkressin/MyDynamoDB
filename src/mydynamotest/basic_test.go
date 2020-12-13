@@ -18,9 +18,10 @@ func TestBasicPut(t *testing.T) {
 	defer KillDynamoServer(cmd)
 
 	//Wait for the nodes to finish spinning up.
-	time.Sleep(3 * time.Second)
+	time.Sleep(5 * time.Second)
 	<-ready
 
+	setClusterSize("./myconfig.ini")
 	//Create a client that connects to the first server
 	//This assumes that the config file specifies 8080 as the starting port
 	clientInstance := MakeConnectedClient(8080)
@@ -38,5 +39,10 @@ func TestBasicPut(t *testing.T) {
 	if len(gotValue.EntryList) != 1 || !valuesEqual(gotValue.EntryList[0].Value, []byte("abcde")) {
 		t.Fail()
 		t.Logf("TestBasicPut: Failed to get value")
+	}
+
+	if !checkVersionFromResult(gotValue, "0", 1) {
+		t.Fail()
+		t.Logf("TestBasicPut: Failed to increment vector clock")
 	}
 }

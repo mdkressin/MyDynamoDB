@@ -1,5 +1,8 @@
 package mydynamo
 
+import (
+	"sync"
+)
 //Placeholder type for RPC functions that don't need an argument list or a return value
 type Empty struct{}
 
@@ -8,7 +11,7 @@ type Context struct {
 	Clock VectorClock
 }
 
-//Information needed to connect to a DynamoNOde
+//Information needed to connect to a DynamoNode
 type DynamoNode struct {
 	Address string
 	Port    string
@@ -30,4 +33,9 @@ type PutArgs struct {
 	Key     string
 	Context Context
 	Value   []byte
+}
+
+type Gossiper struct {
+	gossipMap	map[string][]ObjectEntry
+	m				sync.Mutex
 }

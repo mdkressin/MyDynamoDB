@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 )
 
 func main() {
@@ -45,6 +46,8 @@ func main() {
 	}
 	fmt.Println("Done loading configurations")
 
+	mydynamo.SetClusterSize(cluster_size)
+
 	//keep a list of servers so we can communicate with them
 	serverList := make([]mydynamo.DynamoServer, 0)
 
@@ -75,6 +78,8 @@ func main() {
 	//Create a duplicate of dynamoNodeList that we can rotate
 	//so that each node has a distinct preference list
 	nodePreferenceList := dynamoNodeList
+
+	time.Sleep(2 * time.Second)
 
 	//Send the preference list to all servers
 	for _, info := range dynamoNodeList {
