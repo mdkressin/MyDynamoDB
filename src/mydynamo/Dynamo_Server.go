@@ -20,6 +20,7 @@ type DynamoServer struct {
 	crashUntil		time.Time // simulate node being offline until this moment in time
 	gossiper			map[int]Gossiper // map node index from preferenceList to a Gossiper struct
 	pListLoc			int // location of this node inside its own preferenceList
+	connections		[]*rpc.Client
 
 }
 
@@ -32,6 +33,7 @@ func (s *DynamoServer) SendPreferenceList(incomingList []DynamoNode, _ *Empty) e
 		}
 	}
 	s.newGossiperMap()
+	s.connections	= s.connectToPreferenceNodes()
 	return nil
 }
 
@@ -43,7 +45,7 @@ func (s *DynamoServer) Gossip(_ Empty, _ *Empty) error {
 	}
 
 
-	conns	:= s.connectToPreferenceNodes()
+	//conns	:= s.connectToPreferenceNodes()
 	for key, _ := range s.store {
 		idx	:= 0 // track index for lists of nodes excluding self
 		for i, _ := range s.preferenceList {
@@ -57,7 +59,7 @@ func (s *DynamoServer) Gossip(_ Empty, _ *Empty) error {
 						for _, entry := range entries {
 							var result *bool
 							args	:= NewPutArgs(key, entry.Context, entry.Value)
-							if err	:= conns[idx].Call("MyDynamo.PutOnce", args, result); err != nil {
+							if err	:= s.connections[idx].Call("MyDynamo.PutOnce", args, result); err != nil {
 								// There are still some entries to be consumed
 								break
 							} else {
@@ -89,22 +91,31 @@ func (s *DynamoServer) Put(value PutArgs, result *bool) error {
 	if s.isCrashed() {
 		return fmt.Errorf("server %v is currently offline", s.nodeID)
 	}
-	/*conn, err	:= rpc.DialHTTP("tcp", s.selfNode.Address + s.selfNode.Port)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
 
-	err	= conn.Call("MyDynamo.PutOnce", value, result)
-	return err*/
 	value.Context.Clock.Increment(s.nodeID)
 	err	:= s.PutOnce(value, result)
 	if err != nil {
 		return err
 	}
+	//conns	:= s.connectToPreferenceNodes()
+	w	:= 1 // number of writes to nodes (inlcudes local write)
+	idx	:= 0
 	for i, _ := range s.preferenceList {
 		if !skipNode(s.pListLoc, i) {
-			s.gossiper[i].Append(value.Key, NewObjectEntry(value.Context, value.Value))
+			if w < s.wValue {
+				var q_result *bool
+				if err := s.connections[idx].Call("MyDynamo.PutOnce", value, q_result); err != nil {
+					// node is currently down, add to gossip list
+					s.gossiper[i].Append(value.Key, NewObjectEntry(value.Context, value.Value))
+				} else {
+					// successfully sent request to node (i.e. node online, does not guarantee that request itself was a success)
+					w++
+				}
+			} else {
+				// finished writing to wValue nodes, add to gossip list for remaining nodes
+				s.gossiper[i].Append(value.Key, NewObjectEntry(value.Context, value.Value))
+			}
+			idx++
 		}
 	}
 	//s.gossiper.Append(value.Key, NewObjectEntry(value.Context, value.Value))
@@ -119,17 +130,25 @@ func (s *DynamoServer) Get(key string, result *DynamoResult) error {
 	if s.isCrashed() {
 		return fmt.Errorf("server %v is currently offline\n", s.nodeID)
 	}
-/*
-	conn, err	:= rpc.DialHTTP("tcp", s.selfNode.Address + s.selfNode.Port)
-	if err != nil {
+
+	if err := s.GetOnce(key, result); err != nil {
 		return err
 	}
-	defer conn.Close()
 
-	err	= conn.Call("MyDynamo.GetOnce", key, result)
-	return err */
-	return s.GetOnce(key, result)
-
+	r	:= 1 // number of reads from nodes (inlcudes local read)
+	idx	:= 0
+	for i, _ := range s.preferenceList {
+		if !skipNode(s.pListLoc, i) {
+			if r < s.rValue {
+				if err := s.connections[idx].Call("MyDynamo.GetOnce", key, result); err == nil {
+					r++
+				}
+			}
+			idx++
+		}
+	}
+	RemoveResultAncestors(result)
+	return nil
 }
 
 func (s *DynamoServer) PutOnce(value PutArgs, result *bool) error {
@@ -160,20 +179,6 @@ func (s *DynamoServer) PutOnce(value PutArgs, result *bool) error {
 	}
 	added	:= false	// flag to check if new entry has already been added to list
 	concurrent	:= false// flag to check if new entry was concurrent with any concurrent entries
-	/*for idx, entry := range storedEntries {
-		if newEntry.Context.Clock.LessThan(entry.Context.Clock) {
-			*result	= false
-			return nil
-		}
-		// check if new object entry should replaced the currently stored object entry
-		if entry.Context.Clock.LessThan(newEntry.Context.Clock) {
-			storedEntries[idx]	= newEntry
-			added	= true
-		}
-		if entry.Context.Clock.Concurrent(newEntry.Context.Clock) {
-			concurrent	= true
-		}
-	}*/
 	if err := addToEntries(&storedEntries, newEntry, &added, &concurrent); err != nil {
 		*result	= false
 		return nil
@@ -199,9 +204,13 @@ func (s *DynamoServer) GetOnce(key string, result *DynamoResult) error {
 	if s.isCrashed() {
 		return fmt.Errorf("server %v is currently offline\n", s.nodeID)
 	}
-	var r DynamoResult
+	r := DynamoResult{EntryList: result.EntryList,}
+//	entryList	:= result.Entry
 	if entries, ok	:= s.store[key]; ok {
-		r.EntryList	= entries
+		//r.EntryList	= entries
+		for _, entry := range entries {
+			r.EntryList	= append(r.EntryList, entry)
+		}
 	}
 	*result	= r
 
@@ -215,6 +224,7 @@ func (s *DynamoServer) isCrashed() bool {
 /* Belows are functions that implement server boot up and initialization */
 func NewDynamoServer(w int, r int, hostAddr string, hostPort string, id string) DynamoServer {
 	preferenceList := make([]DynamoNode, 0)
+	connectionsList	:= make([]*rpc.Client, 0)
 	selfNodeInfo := DynamoNode{
 		Address: hostAddr,
 		Port:    hostPort,
@@ -231,6 +241,7 @@ func NewDynamoServer(w int, r int, hostAddr string, hostPort string, id string) 
 		crashUntil:		 time.Time{},
 		gossiper:		 gossiper,
 		pListLoc:		 -1,
+		connections:	 connectionsList,
 	}
 }
 

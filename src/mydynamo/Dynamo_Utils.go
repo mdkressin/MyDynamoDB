@@ -160,7 +160,7 @@ func addToEntries(entries *[]ObjectEntry, newEntry ObjectEntry, add, concurrent 
 	newEntries := *entries
 	for _, entry := range *entries {
 		// Check causality
-		
+
 		if newEntry.Context.Clock.LessThan(entry.Context.Clock) {
 			return fmt.Errorf("newContext < oldContext")
 		}
@@ -190,6 +190,28 @@ func skipNode(selfNode, otherNode int) bool {
 
 func (g Gossiper) GetGossipList(key string) []ObjectEntry {
 	return g.gossipMap[key]
+}
+
+func RemoveResultAncestors(result *DynamoResult) {
+	idx := 0
+	entryList	:= make([]ObjectEntry, len(result.EntryList))
+	copy(entryList, result.EntryList)
+
+	for _, entry := range result.EntryList {
+		hasDescendant	:= false
+		for _, possible_descendant := range entryList {
+			if entry.Context.Clock.LessThan(possible_descendant.Context.Clock) {
+				hasDescendant	= true
+				break
+			}
+		}
+		if hasDescendant {
+			entryList	= remove(entryList, idx)
+		} else {
+			idx++
+		}
+	}
+	result.EntryList	= entryList
 }
 
 func (s DynamoServer) printGossiper() {
